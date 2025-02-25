@@ -32,6 +32,7 @@ fn build_disk_index<T>(
     index_build_ram_limit_gb: f64,
     num_pq_chunks: usize,
     use_opq: bool,
+    alpha: f32,
 ) -> ANNResult<()>
 where
     T: Default + Copy + Sync + Send + Into<f32>,
@@ -45,7 +46,8 @@ where
     let index_write_parameters = IndexWriteParametersBuilder::new(l, r)
         .with_saturate_graph(true)
         .with_num_threads(num_threads)
-        .build();
+        .build()
+        .with_alpha(alpha);
 
     let (data_num, data_dim) = load_metadata_from_file(data_path)?;
 
