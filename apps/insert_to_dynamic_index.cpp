@@ -115,41 +115,9 @@ void insert_till_next_checkpoint(diskann::AbstractIndex &index, size_t start, si
               << " points/second overall, " << (end - start) / elapsedSeconds / thread_count << " per thread)\n ";
 }
 
-template <typename T, typename TagT>
-void delete_from_beginning(diskann::AbstractIndex &index, diskann::IndexWriteParameters &delete_params,
-                           size_t points_to_skip, size_t points_to_delete_from_beginning)
-{
-    try
-    {
-        std::cout << std::endl
-                  << "Lazy deleting points " << points_to_skip << " to "
-                  << points_to_skip + points_to_delete_from_beginning << "... ";
-        for (size_t i = points_to_skip; i < points_to_skip + points_to_delete_from_beginning; ++i)
-            index.lazy_delete(static_cast<TagT>(i + 1)); // Since tags are data location + 1
-        std::cout << "done." << std::endl;
-
-        auto report = index.consolidate_deletes(delete_params);
-        std::cout << "#active points: " << report._active_points << std::endl
-                  << "max points: " << report._max_points << std::endl
-                  << "empty slots: " << report._empty_slots << std::endl
-                  << "deletes processed: " << report._slots_released << std::endl
-                  << "latest delete size: " << report._delete_set_size << std::endl
-                  << "rate: (" << points_to_delete_from_beginning / report._time << " points/second overall, "
-                  << points_to_delete_from_beginning / report._time / delete_params.num_threads << " per thread)"
-                  << std::endl;
-    }
-    catch (std::system_error &e)
-    {
-        std::cout << "Exception caught in deletion thread: " << e.what() << std::endl;
-    }
-}
-
 template <typename T>
-void build_incremental_index(const std::string &data_path, diskann::IndexWriteParameters &params, size_t points_to_skip,
-                             size_t max_points_to_insert, size_t beginning_index_size, float start_point_norm,
-                             uint32_t num_start_pts, size_t points_per_checkpoint, size_t checkpoints_per_snapshot,
-                             const std::string &save_path, size_t points_to_delete_from_beginning,
-                             size_t start_deletes_after, bool concurrent, const std::string &label_file,
+void insert_to_dynamic_index(const std::string &data_path, diskann::IndexWriteParameters &params, size_t start, size_t num_insertions,
+                             const std::string &save_path, bool concurrent, const std::string &label_file,
                              const std::string &universal_label)
 {
     size_t dim, aligned_dim;
@@ -159,9 +127,6 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
     bool has_labels = label_file != "";
     using TagT = uint32_t;
     using LabelT = uint32_t;
-
-    size_t current_point_offset = points_to_skip;
-    const size_t last_point_threshold = points_to_skip + max_points_to_insert;
 
     bool enable_tags = true;
     using TagT = uint32_t;
@@ -187,32 +152,16 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
     diskann::IndexFactory index_factory = diskann::IndexFactory(index_config);
     auto index = index_factory.create_instance();
 
-    if (universal_label != "")
-    {
-        LabelT u_label = 0;
-        index->set_universal_label(u_label);
-    }
-
     T *data = nullptr;
     diskann::alloc_aligned(
-        (void **)&data, num_points * aligned_dim * sizeof(T), 8 * sizeof(T));
-
-    std::vector<TagT> tags(num_points);
-        
-    std::iota(tags.begin(), tags.end(), 1);
-
-    load_aligned_bin_part(data_path, data, 0, num_points);
-    std::cout << "load aligned bin succeeded" << std::endl;
-    diskann::Timer timer;
+        (void **)&data, num_insertions * aligned_dim * sizeof(T), 8 * sizeof(T));
 
     index->load(save_path.c_str(), params.num_threads, params.search_list_size);
 
-
     std::vector<std::vector<LabelT>> location_to_labels;
 
-    const auto save_path_inc = save_path;
-    std::string labels_file_to_use = save_path_inc + "_label_formatted.txt";
-    std::string mem_labels_int_map_file = save_path_inc + "_labels_map.txt";
+    std::string labels_file_to_use = save_path + "_label_formatted.txt";
+    std::string mem_labels_int_map_file = save_path + "_labels_map.txt";
     if (has_labels)
     {
         convert_labels_string_to_int(label_file, labels_file_to_use, mem_labels_int_map_file, universal_label);
@@ -220,25 +169,20 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
         location_to_labels = std::get<0>(parse_result);
     }
 
-    delete_from_beginning<T, TagT>(*index, params, 5000, 45000);
-
-    load_aligned_bin_part(data_path, data, 5000, 45000);
-    insert_till_next_checkpoint<T, TagT, LabelT>(*index, 5000, 50000, (int32_t)params.num_threads, data,
+    load_aligned_bin_part(data_path, data, start, num_insertions);
+    insert_till_next_checkpoint<T, TagT, LabelT>(*index, start, start+num_insertions, (int32_t)params.num_threads, data,
                                                     aligned_dim, location_to_labels);
 
 
-    index->save(save_path_inc.c_str(), true);
-
-    diskann::aligned_free(data);
+    index->save(save_path.c_str(), false);
 }
 
 int main(int argc, char **argv)
 {
     std::string data_type, dist_fn, data_path, index_path_prefix;
-    uint32_t num_threads, R, L, num_start_pts;
-    float alpha, start_point_norm;
-    size_t points_to_skip, max_points_to_insert, beginning_index_size, points_per_checkpoint, checkpoints_per_snapshot,
-        points_to_delete_from_beginning, start_deletes_after;
+    uint32_t num_threads, R, L;
+    float alpha;
+    size_t start, num_insertions;
     bool concurrent;
 
     // label options
@@ -261,17 +205,11 @@ int main(int argc, char **argv)
                                        program_options_utils::INDEX_PATH_PREFIX_DESCRIPTION);
         required_configs.add_options()("data_path", po::value<std::string>(&data_path)->required(),
                                        program_options_utils::INPUT_DATA_PATH);
-        required_configs.add_options()("points_to_skip", po::value<uint64_t>(&points_to_skip)->required(),
-                                       "Skip these first set of points from file");
-        required_configs.add_options()("beginning_index_size", po::value<uint64_t>(&beginning_index_size)->required(),
-                                       "Batch build will be called on these set of points");
-        required_configs.add_options()("points_per_checkpoint", po::value<uint64_t>(&points_per_checkpoint)->required(),
-                                       "Insertions are done in batches of points_per_checkpoint");
-        required_configs.add_options()("checkpoints_per_snapshot",
-                                       po::value<uint64_t>(&checkpoints_per_snapshot)->required(),
-                                       "Save the index to disk every few checkpoints");
-        required_configs.add_options()("points_to_delete_from_beginning",
-                                       po::value<uint64_t>(&points_to_delete_from_beginning)->required(), "");
+        required_configs.add_options()("num_insertions", po::value<uint64_t>(&num_insertions)->required(),
+                                       "Number of insertiosn to perform");
+        required_configs.add_options()("start", po::value<uint64_t>(&start)->required(),
+                                       "Start index from dataset of insertions");
+
 
         // Optional parameters
         po::options_description optional_configs("Optional");
@@ -284,15 +222,7 @@ int main(int argc, char **argv)
                                        program_options_utils::GRAPH_BUILD_COMPLEXITY);
         optional_configs.add_options()("alpha", po::value<float>(&alpha)->default_value(1.2f),
                                        program_options_utils::GRAPH_BUILD_ALPHA);
-        optional_configs.add_options()("max_points_to_insert",
-                                       po::value<uint64_t>(&max_points_to_insert)->default_value(0),
-                                       "These number of points from the file are inserted after "
-                                       "points_to_skip");
         optional_configs.add_options()("do_concurrent", po::value<bool>(&concurrent)->default_value(false), "");
-        optional_configs.add_options()("start_deletes_after",
-                                       po::value<uint64_t>(&start_deletes_after)->default_value(0), "");
-        optional_configs.add_options()("start_point_norm", po::value<float>(&start_point_norm)->default_value(0),
-                                       "Set the start point to a random point on a sphere of this radius");
 
         // optional params for filters
         optional_configs.add_options()("label_file", po::value<std::string>(&label_file)->default_value(""),
@@ -311,12 +241,6 @@ int main(int argc, char **argv)
                                        po::value<uint32_t>(&unique_labels_supported)->default_value(0),
                                        "Number of unique labels supported by the dynamic index.");
 
-        optional_configs.add_options()(
-            "num_start_points",
-            po::value<uint32_t>(&num_start_pts)->default_value(diskann::defaults::NUM_FROZEN_POINTS_DYNAMIC),
-            "Set the number of random start (frozen) points to use when "
-            "inserting and searching");
-
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
 
@@ -328,15 +252,6 @@ int main(int argc, char **argv)
             return 0;
         }
         po::notify(vm);
-        if (beginning_index_size == 0)
-            if (start_point_norm == 0)
-            {
-                std::cout << "When beginning_index_size is 0, use a start "
-                             "point with  "
-                             "appropriate norm"
-                          << std::endl;
-                return -1;
-            }
     }
     catch (const std::exception &ex)
     {
@@ -350,11 +265,6 @@ int main(int argc, char **argv)
         has_labels = true;
     }
 
-    if (num_start_pts < unique_labels_supported)
-    {
-        num_start_pts = unique_labels_supported;
-    }
-
     try
     {
         diskann::IndexWriteParameters params = diskann::IndexWriteParametersBuilder(L, R)
@@ -365,20 +275,14 @@ int main(int argc, char **argv)
                                                    .build();
 
         if (data_type == std::string("int8"))
-            build_incremental_index<int8_t>(
-                data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, points_per_checkpoint, checkpoints_per_snapshot, index_path_prefix,
-                points_to_delete_from_beginning, start_deletes_after, concurrent, label_file, universal_label);
+            insert_to_dynamic_index<int8_t>(
+                data_path, params, start, num_insertions, index_path_prefix, concurrent, label_file, universal_label);
         else if (data_type == std::string("uint8"))
-            build_incremental_index<uint8_t>(
-                data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, points_per_checkpoint, checkpoints_per_snapshot, index_path_prefix,
-                points_to_delete_from_beginning, start_deletes_after, concurrent, label_file, universal_label);
+            insert_to_dynamic_index<uint8_t>(
+                data_path, params, start, num_insertions, index_path_prefix, concurrent, label_file, universal_label);
         else if (data_type == std::string("float"))
-            build_incremental_index<float>(data_path, params, points_to_skip, max_points_to_insert,
-                                           beginning_index_size, start_point_norm, num_start_pts, points_per_checkpoint,
-                                           checkpoints_per_snapshot, index_path_prefix, points_to_delete_from_beginning,
-                                           start_deletes_after, concurrent, label_file, universal_label);
+            insert_to_dynamic_index<float>(
+                data_path, params, start, num_insertions, index_path_prefix, concurrent, label_file, universal_label);
         else
             std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
     }

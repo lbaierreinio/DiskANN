@@ -78,10 +78,52 @@ inline void load_aligned_bin_part(const std::string &bin_file, T *data, size_t o
     std::cout << "Read " << points_to_read << " points using non-cached reads in " << elapsedSeconds << std::endl;
 }
 
+std::string get_save_filename(const std::string &save_path, size_t points_to_skip, size_t points_deleted,
+                              size_t last_point_threshold)
+{
+    std::string final_path = save_path;
+    if (points_to_skip > 0)
+    {
+        final_path += "skip" + std::to_string(points_to_skip) + "-";
+    }
+
+    final_path += "del" + std::to_string(points_deleted) + "-";
+    final_path += std::to_string(last_point_threshold);
+    return final_path;
+}
+
+template <typename T, typename TagT>
+void delete_from_beginning(diskann::AbstractIndex &index, diskann::IndexWriteParameters &delete_params,
+                           size_t points_to_skip, size_t points_to_delete_from_beginning)
+{
+    try
+    {
+        std::cout << std::endl
+                  << "Lazy deleting points " << points_to_skip << " to "
+                  << points_to_skip + points_to_delete_from_beginning << "... ";
+        for (size_t i = points_to_skip; i < points_to_skip + points_to_delete_from_beginning; ++i)
+            index.lazy_delete(static_cast<TagT>(i + 1)); // Since tags are data location + 1
+        std::cout << "done." << std::endl;
+
+        auto report = index.consolidate_deletes(delete_params);
+        std::cout << "#active points: " << report._active_points << std::endl
+                  << "max points: " << report._max_points << std::endl
+                  << "empty slots: " << report._empty_slots << std::endl
+                  << "deletes processed: " << report._slots_released << std::endl
+                  << "latest delete size: " << report._delete_set_size << std::endl
+                  << "rate: (" << points_to_delete_from_beginning / report._time << " points/second overall, "
+                  << points_to_delete_from_beginning / report._time / delete_params.num_threads << " per thread)"
+                  << std::endl;
+    }
+    catch (std::system_error &e)
+    {
+        std::cout << "Exception caught in deletion thread: " << e.what() << std::endl;
+    }
+}
+
 template <typename T>
-void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParameters &params, size_t points_to_skip,
-                             size_t beginning_index_size, const std::string &save_path, const std::string &label_file,
-                             const std::string &universal_label, bool concurrent)
+void delete_from_index(const std::string &data_path, diskann::IndexWriteParameters &params, const std::string &save_path, size_t start, size_t num_deletions, bool concurrent,
+                             const std::string &universal_label, const std::string &label_file)
 {
     size_t dim, aligned_dim;
     size_t num_points;
@@ -121,20 +163,12 @@ void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParame
         index->set_universal_label(u_label);
     }
 
-    T *data = nullptr;
-    diskann::alloc_aligned(
-        (void **)&data, beginning_index_size * aligned_dim * sizeof(T), 8 * sizeof(T));
+    index->load(save_path.c_str(), params.num_threads, params.search_list_size);
 
-    std::vector<TagT> tags(beginning_index_size);
-        
-    std::iota(tags.begin(), tags.end(), 1);
+    delete_from_beginning<T, TagT>(*index, params, start, num_deletions);
 
-    load_aligned_bin_part(data_path, data, 0, beginning_index_size);
-    std::cout << "load aligned bin succeeded" << std::endl;
-
-    index->build(data, beginning_index_size, tags);
     index->save(save_path.c_str(), true);
-    diskann::aligned_free(data);
+
 }
 
 int main(int argc, char **argv)
@@ -142,15 +176,15 @@ int main(int argc, char **argv)
     std::string data_type, dist_fn, data_path, index_path_prefix;
     uint32_t num_threads, R, L;
     float alpha;
-    size_t points_to_skip, beginning_index_size;
+    size_t start, num_deletions;
     bool concurrent;
 
     // label options
     std::string label_file, label_type, universal_label;
     std::uint32_t Lf, unique_labels_supported;
 
-    po::options_description desc{program_options_utils::make_program_description("build_dynamic_index",
-                                                                                 "Build dynamic index")};
+    po::options_description desc{program_options_utils::make_program_description("delete_from_dynamic_index",
+                                                                                 "Delete from dynamic index")};
     try
     {
         desc.add_options()("help,h", "Print information on arguments");
@@ -165,10 +199,10 @@ int main(int argc, char **argv)
                                        program_options_utils::INDEX_PATH_PREFIX_DESCRIPTION);
         required_configs.add_options()("data_path", po::value<std::string>(&data_path)->required(),
                                        program_options_utils::INPUT_DATA_PATH);
-        required_configs.add_options()("offset", po::value<uint64_t>(&points_to_skip)->required(),
-                                       "Skip these first set of points from file");
-        required_configs.add_options()("size", po::value<uint64_t>(&beginning_index_size)->required(),
-                                       "Batch build will be called on these set of points");
+        required_configs.add_options()("num_deletions", po::value<uint64_t>(&num_deletions)->required(),
+                                       "Number of points to be deleted");
+        required_configs.add_options()("start", po::value<uint64_t>(&start)->required(),
+                                       "Start index of points to be deleted");
 
         // Optional parameters
         po::options_description optional_configs("Optional");
@@ -232,16 +266,18 @@ int main(int argc, char **argv)
                                                    .with_num_threads(num_threads)
                                                    .with_filter_list_size(Lf)
                                                    .build();
-            
+
         if (data_type == std::string("int8"))
-            build_dynamic_index<int8_t>(
-                data_path, params, points_to_skip, beginning_index_size, index_path_prefix, label_file, universal_label, concurrent);
+            delete_from_index<int8_t>(
+                data_path, params, index_path_prefix, start, num_deletions,
+                concurrent, universal_label, label_file);
         else if (data_type == std::string("uint8"))
-        build_dynamic_index<uint8_t>(
-                data_path, params, points_to_skip, beginning_index_size, index_path_prefix, label_file, universal_label, concurrent);
+            delete_from_index<uint8_t>(
+                data_path, params, index_path_prefix, start, num_deletions,
+                concurrent, universal_label, label_file);
         else if (data_type == std::string("float"))
-        build_dynamic_index<float>(
-            data_path, params, points_to_skip, beginning_index_size, index_path_prefix, label_file, universal_label, concurrent);
+            delete_from_index<float>(data_path, params, index_path_prefix, start, num_deletions,
+                    concurrent, universal_label, label_file);
         else
             std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
     }
