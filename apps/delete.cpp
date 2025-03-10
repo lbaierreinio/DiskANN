@@ -9,7 +9,6 @@
 #include <timer.h>
 #include <boost/program_options.hpp>
 #include <future>
-#include <log_utils.h>
 
 #include "utils.h"
 #include "filter_utils.h"
@@ -97,13 +96,9 @@ void insert_till_next_checkpoint(diskann::AbstractIndex &index, size_t start, si
             index.insert_point(&data[(j - start) * aligned_dim], 1 + static_cast<TagT>(j));
         }
     }
-
     const double elapsedSeconds = insert_timer.elapsed() / 1000000.0;
     std::cout << "Insertion time " << elapsedSeconds << " seconds (" << (end - start) / elapsedSeconds
               << " points/second overall, " << (end - start) / elapsedSeconds / thread_count << " per thread)\n ";
-    
-    get_log_file() << "insertion_time: " << elapsedSeconds << std::endl;
-    get_log_file() << "num_inserted: " << end - start << std::endl;
 }
 
 template <typename T, typename TagT>
@@ -128,9 +123,6 @@ void delete_from_beginning(diskann::AbstractIndex &index, diskann::IndexWritePar
                   << "rate: (" << points_to_delete_from_beginning / report._time << " points/second overall, "
                   << points_to_delete_from_beginning / report._time / delete_params.num_threads << " per thread)"
                   << std::endl;
-        
-        get_log_file() << "deletion_time: " << report._time << std::endl;
-        get_log_file() << "num_deleted: " << points_to_delete_from_beginning << std::endl;
     }
     catch (std::system_error &e)
     {
@@ -144,7 +136,7 @@ void delete_insert(const std::string &data_path, diskann::IndexWriteParameters &
     uint32_t num_start_pts, const std::string &save_path, 
    const std::string &label_file,
    const std::string &universal_label,
-   size_t start_insertion_index, size_t start_deletion_index, size_t num_insertions, size_t num_deletions)
+   size_t start_edit_index, size_t num_edits)
 {
     size_t dim, aligned_dim;
     size_t num_points;
@@ -185,27 +177,25 @@ void delete_insert(const std::string &data_path, diskann::IndexWriteParameters &
        
     index->load(save_path.c_str(), params.num_threads, params.search_list_size);
 
-    std::vector<std::vector<LabelT>> location_to_labels;
+    //std::vector<TagT> tags(num_edits);
+    // std::iota(tags.begin(), tags.end(), 1 + static_cast<TagT>(start_edit_index));
 
     const auto save_path_inc = save_path;
-    std::string labels_file_to_use = save_path_inc + "_label_formatted.txt";
-    std::string mem_labels_int_map_file = save_path_inc + "_labels_map.txt";
-    if (has_labels)
-    {
-        convert_labels_string_to_int(label_file, labels_file_to_use, mem_labels_int_map_file, universal_label);
-        auto parse_result = diskann::parse_formatted_label_file<LabelT>(labels_file_to_use);
-        location_to_labels = std::get<0>(parse_result);
-    }
 
-    delete_from_beginning<T, TagT>(*index, params, start_deletion_index, num_deletions);
-
+    size_t start = start_edit_index;
+    size_t end = start_edit_index + num_edits;
+    
+    delete_from_beginning<T, TagT>(*index, params, start, num_edits);
+    
+    /**
     T *data = nullptr;
     diskann::alloc_aligned(
-        (void **)&data, num_insertions * aligned_dim * sizeof(T), 8 * sizeof(T));
+        (void **)&data, (end-start) * aligned_dim * sizeof(T), 8 * sizeof(T));
 
-    load_aligned_bin_part(data_path, data, start_insertion_index, num_insertions);
-    insert_till_next_checkpoint<T, TagT, LabelT>(*index, start_insertion_index, start_insertion_index+num_insertions, (int32_t)params.num_threads, data,
+    load_aligned_bin_part(data_path, data, start, end - start);
+    insert_till_next_checkpoint<T, TagT, LabelT>(*index, start, end, (int32_t)params.num_threads, data,
                                                     aligned_dim, location_to_labels);
+    */
 
     index->save(save_path_inc.c_str(), true); 
 }
@@ -215,7 +205,7 @@ int main(int argc, char **argv)
     std::string data_type, dist_fn, data_path, index_path_prefix;
     uint32_t num_threads, R, L, num_start_pts;
     float alpha;
-    size_t max_points_to_insert, start_insertion_index, start_deletion_index, num_insertions, num_deletions;
+    size_t max_points_to_insert, start_edit_index, num_edits;
 
     // label options
     std::string label_file, label_type, universal_label;
@@ -237,14 +227,6 @@ int main(int argc, char **argv)
                                        program_options_utils::INDEX_PATH_PREFIX_DESCRIPTION);
         required_configs.add_options()("data_path", po::value<std::string>(&data_path)->required(),
                                        program_options_utils::INPUT_DATA_PATH);
-        required_configs.add_options()("start_insertion_index", po::value<uint64_t>(&start_insertion_index)->required(),
-                                       "Index to start performing insertions from");
-        required_configs.add_options()("start_deletion_index", po::value<uint64_t>(&start_deletion_index)->required(),
-                                       "Index to start performing deletions from");
-        required_configs.add_options()("num_insertions", po::value<uint64_t>(&num_insertions)->required(),
-                                       "Number of insertions to be performed");
-        required_configs.add_options()("num_deletions", po::value<uint64_t>(&num_deletions)->required(),
-                                       "Number of deletions to be performed");
 
         // Optional parameters
         po::options_description optional_configs("Optional");
@@ -261,6 +243,10 @@ int main(int argc, char **argv)
                                        po::value<uint64_t>(&max_points_to_insert)->default_value(0),
                                        "These number of points from the file are inserted after "
                                        "points_to_skip");
+        optional_configs.add_options()("start_edit_index", po::value<uint64_t>(&start_edit_index)->default_value(0),
+                                       "Index to start performing edits from");
+        optional_configs.add_options()("num_edits", po::value<uint64_t>(&num_edits)->default_value(0),
+                                       "Number of edits to be performed");
 
         // optional params for filters
         optional_configs.add_options()("label_file", po::value<std::string>(&label_file)->default_value(""),
@@ -327,16 +313,16 @@ int main(int argc, char **argv)
             delete_insert<int8_t>(
                 data_path, params, max_points_to_insert,
                 num_start_pts, index_path_prefix, label_file, universal_label,
-                start_insertion_index, start_deletion_index, num_insertions, num_deletions);
+                start_edit_index, num_edits);
         else if (data_type == std::string("uint8"))
             delete_insert<uint8_t>(
                 data_path, params, max_points_to_insert,
                 num_start_pts, index_path_prefix, label_file, universal_label,
-                start_insertion_index, start_deletion_index, num_insertions, num_deletions);
+                start_edit_index, num_edits);
         else if (data_type == std::string("float"))
             delete_insert<float>(data_path, params, max_points_to_insert,
                 num_start_pts, index_path_prefix, label_file, universal_label,
-                start_insertion_index, start_deletion_index, num_insertions, num_deletions);
+                start_edit_index, num_edits);
         else
             std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
     }
