@@ -29,6 +29,10 @@ typedef int FileHandle;
 #include "types.h"
 #include "tag_uint128.h"
 #include <any>
+#include <iostream>
+#include <ctime>
+#include <iomanip> 
+#include <sstream>
 
 #ifdef EXEC_ENV_OLS
 #include "content_buf.h"
@@ -738,35 +742,107 @@ inline size_t save_bin(const std::string &filename, T *data, size_t npts, size_t
 
 template <typename T>
 inline void save_vector1d(const std::string &filename, const std::vector<T> &vec) {
-    std::ofstream file(filename, std::ios::binary);
+    size_t num_cols = vec.size();
+    size_t num_rows = 1;
+
+    std::ios::openmode mode = std::ios::binary|std::ios::out;
+    bool file_exists = (access(filename.c_str(), F_OK) != -1); // Check if file exists
+    if (file_exists) {
+        mode |= std::ios::in; // Read & append mode
+    } else {
+        mode |= std::ios::trunc; // Overwrite mode
+    }
+
+    std::fstream file(filename, mode);
     if (!file) {
         std::cerr << "Error opening file: " << filename << std::endl;
         return;
     }
 
-    size_t size = vec.size();
-    file.write(reinterpret_cast<const char *>(&size), sizeof(size));
-    file.write(reinterpret_cast<const char *>(vec.data()), size * sizeof(T)); 
+    uint64_t existing_rows = 0, stored_cols = 0;
+
+    if (file_exists) {
+        file.read(reinterpret_cast<char *>(&existing_rows), sizeof(uint64_t));
+        file.read(reinterpret_cast<char *>(&stored_cols), sizeof(uint64_t));
+
+        if (stored_cols != num_cols) {
+            std::cerr << "Error: Column count mismatch (expected " << stored_cols << ", got " << num_cols << ")" << std::endl;
+            return;
+        }
+
+        num_rows = existing_rows + 1;
+        file.seekp(0);
+    }
+
+    // Write updated header
+    file.write(reinterpret_cast<const char *>(&num_rows), sizeof(uint64_t));
+    file.write(reinterpret_cast<const char *>(&num_cols), sizeof(uint64_t));
+
+    if (file_exists) {
+        file.seekp(0, std::ios::end);
+    }
+
+    // Write row of data
+    file.write(reinterpret_cast<const char *>(vec.data()), vec.size() * sizeof(T));
+
+    file.close();
 }
 
 template <typename T>
 inline void save_vector2d(const std::string &filename, const std::vector<std::vector<T>> &vec) {
-    std::ofstream file(filename, std::ios::binary);
+    size_t num_rows = vec.size();
+    size_t num_cols = vec[0].size();
+
+    uint64_t num_depth = 1; 
+
+    std::ios::openmode mode = std::ios::binary | std::ios::out;
+    bool file_exists = (access(filename.c_str(), F_OK) != -1); // Check if file exists
+
+    if (file_exists) {
+        mode |= std::ios::in; // Read & append mode
+    } else {
+        mode |= std::ios::trunc; // Overwrite mode
+    }
+
+    std::fstream file(filename, mode);
     if (!file) {
         std::cerr << "Error opening file: " << filename << std::endl;
         return;
     }
 
-    size_t rows = vec.size();
-    size_t cols = rows > 0 ? vec[0].size() : 0;
+    uint64_t existing_depth = 0, stored_rows = 0, stored_cols = 0;
 
-    file.write(reinterpret_cast<const char *>(&rows), sizeof(rows));
-    file.write(reinterpret_cast<const char *>(&cols), sizeof(cols));
+    if (file_exists) {
+        file.read(reinterpret_cast<char *>(&existing_depth), sizeof(uint64_t));
+        file.read(reinterpret_cast<char *>(&stored_rows), sizeof(uint64_t));
+        file.read(reinterpret_cast<char *>(&stored_cols), sizeof(uint64_t));
+
+        if (stored_rows != num_rows || stored_cols != num_cols) {
+            std::cerr << "Error: Dimension mismatch (expected " 
+                      << stored_rows << "x" << stored_cols 
+                      << ", got " << num_rows << "x" << num_cols << ")" << std::endl;
+            return;
+        }
+
+        num_depth = existing_depth + 1; 
+        file.seekp(0);
+    }
+
+    // Write updated metadata
+    file.write(reinterpret_cast<const char *>(&num_depth), sizeof(uint64_t));
+    file.write(reinterpret_cast<const char *>(&num_rows), sizeof(uint64_t));
+    file.write(reinterpret_cast<const char *>(&num_cols), sizeof(uint64_t));
+
+    if (file_exists) {
+        file.seekp(0, std::ios::end);
+    }
 
     for (const auto &row : vec) {
-        file.write(reinterpret_cast<const char *>(row.data()), cols * sizeof(T));
+        file.write(reinterpret_cast<const char *>(row.data()), row.size() * sizeof(T));
     }
+    file.close();
 }
+
 
 inline void print_progress(double percentage)
 {

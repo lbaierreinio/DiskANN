@@ -9,6 +9,7 @@
 #include <set>
 #include <string.h>
 #include <boost/program_options.hpp>
+#include <log_utils.h>
 
 #ifndef _WINDOWS
 #include <sys/mman.h>
@@ -147,6 +148,7 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
     std::vector<double> recalls;
     recalls.reserve(Lvec.size() * num_recalls);
 
+    std::ofstream& logfile = get_log_file();
     for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++)
     {
         uint32_t L = Lvec[test_id];
@@ -237,6 +239,7 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
         {
             std::cout << std::setw(4) << L << std::setw(12) << displayed_qps << std::setw(20) << (float)mean_latency
                       << std::setw(15) << (float)latency_stats[test_id][(uint64_t)(0.999 * query_num)];
+
         }
         else
         {
@@ -249,8 +252,15 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
             double recall = recalls[test_id*num_recalls + i];
             std::cout << std::setw(12) << recall;
             best_recall = std::max(recall, best_recall);
+
         }
         std::cout << std::endl;
+
+
+	logfile  << "L = " << L << " Mean Latency: " << mean_latency << std::endl; 
+	logfile << "L = " << L << " Tail Latency: " << (float)latency_stats[test_id][(uint64_t)(0.999 * query_num)] << std::endl; 
+	logfile  << "L = " << L << " Recall@" << recall_at << ": " << best_recall << std::endl; 
+	logfile  << "L = " << L << " QPS: " << displayed_qps << std::endl; 
     }
 
     std::cout << "Done searching. Now saving results " << std::endl;
@@ -273,12 +283,13 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
         test_id++;
     }
     // Writing recalls
-    std::string recall_path = result_path_prefix + "_" + "recalls_double.bin";
+    std::string recall_path = result_path_prefix + "_recalls_double.bin";
     diskann::save_vector1d<double>(recall_path, recalls);
     // Writing latencies
-    std::string latency_path = result_path_prefix + "_" + "latencies.bin";
+    std::string latency_path = result_path_prefix + "_latencies.bin";
     diskann::save_vector2d<float>(latency_path, latency_stats);
     
+        
 
     diskann::aligned_free(query);
     return best_recall >= fail_if_recall_below ? 0 : -1;
