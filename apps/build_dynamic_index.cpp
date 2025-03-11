@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <timer.h>
+#include <log_utils.h>
 #include <boost/program_options.hpp>
 #include <future>
 
@@ -78,14 +79,15 @@ inline void load_aligned_bin_part(const std::string &bin_file, T *data, size_t o
     std::cout << "Read " << points_to_read << " points using non-cached reads in " << elapsedSeconds << std::endl;
 }
 
+
 template <typename T>
-void build_incremental_index(const std::string &data_path, diskann::IndexWriteParameters &params, size_t points_to_skip,
+void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParameters &params, size_t points_to_skip,
                              size_t max_points_to_insert, size_t beginning_index_size, float start_point_norm,
-                             uint32_t num_start_pts, size_t points_per_checkpoint, size_t checkpoints_per_snapshot,
-                             const std::string &save_path, size_t points_to_delete_from_beginning,
-                             size_t start_deletes_after, bool concurrent, const std::string &label_file,
+                             uint32_t num_start_pts, const std::string &save_path, 
+                              bool concurrent, const std::string &label_file,
                              const std::string &universal_label)
 {
+    std::ofstream& logfile = get_log_file();
     size_t dim, aligned_dim;
     size_t num_points;
     diskann::get_bin_metadata(data_path, num_points, dim);
@@ -94,16 +96,13 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
     using TagT = uint32_t;
     using LabelT = uint32_t;
 
-    size_t current_point_offset = points_to_skip;
-    const size_t last_point_threshold = points_to_skip + max_points_to_insert;
-
     bool enable_tags = true;
     using TagT = uint32_t;
     auto index_search_params = diskann::IndexSearchParams(params.search_list_size, params.num_threads);
     diskann::IndexConfig index_config = diskann::IndexConfigBuilder()
                                             .with_metric(diskann::L2)
                                             .with_dimension(dim)
-                                            .with_max_points(num_points)
+                                            .with_max_points(max_points_to_insert)
                                             .is_dynamic_index(true)
                                             .with_index_write_params(params)
                                             .with_index_search_params(index_search_params)
@@ -114,8 +113,7 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
                                             .with_graph_load_store_strategy(diskann::GraphStoreStrategy::MEMORY)
                                             .is_enable_tags(enable_tags)
                                             .is_filtered(has_labels)
-                                            .with_num_frozen_pts(1)
-                                            .is_concurrent_consolidate(concurrent)
+                                            .with_num_frozen_pts(num_start_pts)
                                             .build();
 
     diskann::IndexFactory index_factory = diskann::IndexFactory(index_config);
@@ -127,19 +125,49 @@ void build_incremental_index(const std::string &data_path, diskann::IndexWritePa
         index->set_universal_label(u_label);
     }
 
+    if (points_to_skip > num_points)
+    {
+        throw diskann::ANNException("Asked to skip more points than in data file", -1, __FUNCSIG__, __FILE__, __LINE__);
+    }
+
+    if (max_points_to_insert == 0)
+    {
+        max_points_to_insert = num_points;
+    }
+
+    if (points_to_skip + max_points_to_insert > num_points)
+    {
+        max_points_to_insert = num_points - points_to_skip;
+        std::cerr << "WARNING: Reducing max_points_to_insert to " << max_points_to_insert
+                  << " points since the data file has only that many" << std::endl;
+    }
+
+    if (beginning_index_size > max_points_to_insert)
+    {
+        beginning_index_size = max_points_to_insert;
+        std::cerr << "WARNING: Reducing beginning index size to " << beginning_index_size
+                  << " points since the data file has only that many" << std::endl;
+    }
+    
     T *data = nullptr;
     diskann::alloc_aligned(
-        (void **)&data, num_points * aligned_dim * sizeof(T), 8 * sizeof(T));
+        (void **)&data, beginning_index_size * aligned_dim * sizeof(T), 8 * sizeof(T));
 
-    std::vector<TagT> tags(num_points);
-        
-    std::iota(tags.begin(), tags.end(), 1);
+    std::vector<TagT> tags(beginning_index_size);
+    std::iota(tags.begin(), tags.end(), 1 + static_cast<TagT>(points_to_skip));
 
-    load_aligned_bin_part(data_path, data, 0, num_points);
+    load_aligned_bin_part(data_path, data, 1 + static_cast<TagT>(points_to_skip), beginning_index_size);
     std::cout << "load aligned bin succeeded" << std::endl;
     diskann::Timer timer;
+    index->build(data, beginning_index_size, tags);
 
-    index->build(data, num_points, tags);
+
+    const double elapsedSeconds = timer.elapsed() / 1000000.0;
+    std::cout << "Initial non-incremental index build time for " << beginning_index_size << " points took "
+            << elapsedSeconds << " seconds (" << beginning_index_size / elapsedSeconds << " points/second)\n ";
+    
+    log_file << "initial_build_time: " << elapsedSeconds << std::endl;
+    
     index->save(save_path.c_str(), true);
     diskann::aligned_free(data);
 }
@@ -149,8 +177,7 @@ int main(int argc, char **argv)
     std::string data_type, dist_fn, data_path, index_path_prefix;
     uint32_t num_threads, R, L, num_start_pts;
     float alpha, start_point_norm;
-    size_t points_to_skip, max_points_to_insert, beginning_index_size, points_per_checkpoint, checkpoints_per_snapshot,
-        points_to_delete_from_beginning, start_deletes_after;
+    size_t points_to_skip, max_points_to_insert, beginning_index_size;
     bool concurrent;
 
     // label options
@@ -177,13 +204,6 @@ int main(int argc, char **argv)
                                        "Skip these first set of points from file");
         required_configs.add_options()("beginning_index_size", po::value<uint64_t>(&beginning_index_size)->required(),
                                        "Batch build will be called on these set of points");
-        required_configs.add_options()("points_per_checkpoint", po::value<uint64_t>(&points_per_checkpoint)->required(),
-                                       "Insertions are done in batches of points_per_checkpoint");
-        required_configs.add_options()("checkpoints_per_snapshot",
-                                       po::value<uint64_t>(&checkpoints_per_snapshot)->required(),
-                                       "Save the index to disk every few checkpoints");
-        required_configs.add_options()("points_to_delete_from_beginning",
-                                       po::value<uint64_t>(&points_to_delete_from_beginning)->required(), "");
 
         // Optional parameters
         po::options_description optional_configs("Optional");
@@ -201,8 +221,6 @@ int main(int argc, char **argv)
                                        "These number of points from the file are inserted after "
                                        "points_to_skip");
         optional_configs.add_options()("do_concurrent", po::value<bool>(&concurrent)->default_value(false), "");
-        optional_configs.add_options()("start_deletes_after",
-                                       po::value<uint64_t>(&start_deletes_after)->default_value(0), "");
         optional_configs.add_options()("start_point_norm", po::value<float>(&start_point_norm)->default_value(0),
                                        "Set the start point to a random point on a sphere of this radius");
 
@@ -240,15 +258,6 @@ int main(int argc, char **argv)
             return 0;
         }
         po::notify(vm);
-        if (beginning_index_size == 0)
-            if (start_point_norm == 0)
-            {
-                std::cout << "When beginning_index_size is 0, use a start "
-                             "point with  "
-                             "appropriate norm"
-                          << std::endl;
-                return -1;
-            }
     }
     catch (const std::exception &ex)
     {
@@ -277,20 +286,17 @@ int main(int argc, char **argv)
                                                    .build();
 
         if (data_type == std::string("int8"))
-            build_incremental_index<int8_t>(
+            build_dynamic_index<int8_t>(
                 data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, points_per_checkpoint, checkpoints_per_snapshot, index_path_prefix,
-                points_to_delete_from_beginning, start_deletes_after, concurrent, label_file, universal_label);
+                num_start_pts, index_path_prefix, concurrent, label_file, universal_label);
         else if (data_type == std::string("uint8"))
-            build_incremental_index<uint8_t>(
+            build_dynamic_index<uint8_t>(
                 data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, points_per_checkpoint, checkpoints_per_snapshot, index_path_prefix,
-                points_to_delete_from_beginning, start_deletes_after, concurrent, label_file, universal_label);
+                num_start_pts, index_path_prefix, concurrent, label_file, universal_label);
         else if (data_type == std::string("float"))
-            build_incremental_index<float>(data_path, params, points_to_skip, max_points_to_insert,
-                                           beginning_index_size, start_point_norm, num_start_pts, points_per_checkpoint,
-                                           checkpoints_per_snapshot, index_path_prefix, points_to_delete_from_beginning,
-                                           start_deletes_after, concurrent, label_file, universal_label);
+            build_dynamic_index<float>(data_path, params, points_to_skip, max_points_to_insert,
+                beginning_index_size, start_point_norm, num_start_pts,
+                index_path_prefix, concurrent, label_file, universal_label);
         else
             std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
     }
