@@ -146,7 +146,7 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
     uint32_t num_recalls = print_all_recalls ? recall_at : 1;
     std::vector<double> recalls;
     recalls.reserve(Lvec.size() * num_recalls);
-
+    std::ofstream& logfile = get_log_file();
     for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++)
     {
         uint32_t L = Lvec[test_id];
@@ -251,6 +251,10 @@ int search_memory_index(diskann::Metric &metric, const std::string &index_path, 
             best_recall = std::max(recall, best_recall);
         }
         std::cout << std::endl;
+        logfile  << "L = " << L << " Mean Latency: " << mean_latency << std::endl; 
+        logfile << "L = " << L << " Tail Latency: " << (float)latency_stats[test_id][(uint64_t)(0.999 * query_num)] << std::endl; 
+        logfile  << "L = " << L << " Recall@" << recall_at << ": " << best_recall << std::endl; 
+        logfile  << "L = " << L << " QPS: " << displayed_qps << std::endl; 
     }
 
     std::cout << "Done searching. Now saving results " << std::endl;
