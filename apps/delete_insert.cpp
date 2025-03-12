@@ -103,8 +103,8 @@ void insert_till_next_checkpoint(diskann::AbstractIndex &index, size_t start, si
     std::cout << "Insertion time " << elapsedSeconds << " seconds (" << (end - start) / elapsedSeconds
               << " points/second overall, " << (end - start) / elapsedSeconds / thread_count << " per thread)\n ";
     
-    log_file << "insertion_time: " << elapsedSeconds << std::endl;
-    log_file << "num_inserted: " << end - start << std::endl;
+    logfile << "insertion_time: " << elapsedSeconds << std::endl;
+    logfile << "num_inserted: " << end - start << std::endl;
 }
 
 template <typename T, typename TagT>
@@ -131,8 +131,8 @@ void delete_from_beginning(diskann::AbstractIndex &index, diskann::IndexWritePar
                   << points_to_delete_from_beginning / report._time / delete_params.num_threads << " per thread)"
                   << std::endl;
         
-        log_file << "deletion_time: " << report._time << std::endl;
-        log_file << "num_deleted: " << points_to_delete_from_beginning << std::endl;
+        logfile << "deletion_time: " << report._time << std::endl;
+        logfile << "num_deleted: " << points_to_delete_from_beginning << std::endl;
     }
     catch (std::system_error &e)
     {

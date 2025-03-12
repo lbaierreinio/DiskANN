@@ -166,7 +166,7 @@ void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParame
     std::cout << "Initial non-incremental index build time for " << beginning_index_size << " points took "
             << elapsedSeconds << " seconds (" << beginning_index_size / elapsedSeconds << " points/second)\n ";
     
-    log_file << "initial_build_time: " << elapsedSeconds << std::endl;
+    logfile << "initial_build_time: " << elapsedSeconds << std::endl;
     
     index->save(save_path.c_str(), true);
     diskann::aligned_free(data);
