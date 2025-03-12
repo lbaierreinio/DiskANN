@@ -9,6 +9,7 @@
 #include <set>
 #include <string.h>
 #include <boost/program_options.hpp>
+#include <log_utils.h>
 
 #ifndef _WINDOWS
 #include <sys/mman.h>
