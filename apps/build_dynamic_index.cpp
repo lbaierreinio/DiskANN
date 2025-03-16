@@ -242,9 +242,6 @@ int main(int argc, char **argv)
         optional_configs.add_options()("unique_labels_supported",
                                        po::value<uint32_t>(&unique_labels_supported)->default_value(0),
                                        "Number of unique labels supported by the dynamic index.");
-        optional_configs.add_options()("unique_labels_supported",
-                                        po::value<uint32_t>(&unique_labels_supported)->default_value(0),
-                                        "Number of unique labels supported by the dynamic index.");
         optional_configs.add_options()(
             "num_start_points",
             po::value<uint32_t>(&num_start_pts)->default_value(diskann::defaults::NUM_FROZEN_POINTS_DYNAMIC),
