@@ -85,7 +85,7 @@ void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParame
                              size_t max_points_to_insert, size_t beginning_index_size, float start_point_norm,
                              uint32_t num_start_pts, const std::string &save_path, 
                               bool concurrent, const std::string &label_file,
-                             const std::string &universal_label)
+                             const std::string &universal_label, bool save_index)
 {
     std::ofstream& logfile = get_log_file();
     size_t dim, aligned_dim;
@@ -168,7 +168,9 @@ void build_dynamic_index(const std::string &data_path, diskann::IndexWriteParame
     
     logfile << "initial_build_time: " << elapsedSeconds << std::endl;
     
-    index->save(save_path.c_str(), true);
+    if (save_index) {
+        index->save(save_path.c_str(), true);
+    }
     diskann::aligned_free(data);
 }
 
@@ -178,7 +180,7 @@ int main(int argc, char **argv)
     uint32_t num_threads, R, L, num_start_pts;
     float alpha, start_point_norm;
     size_t points_to_skip, max_points_to_insert, beginning_index_size;
-    bool concurrent;
+    bool concurrent, save_index;
 
     // label options
     std::string label_file, label_type, universal_label;
@@ -240,12 +242,14 @@ int main(int argc, char **argv)
         optional_configs.add_options()("unique_labels_supported",
                                        po::value<uint32_t>(&unique_labels_supported)->default_value(0),
                                        "Number of unique labels supported by the dynamic index.");
-
         optional_configs.add_options()(
             "num_start_points",
             po::value<uint32_t>(&num_start_pts)->default_value(diskann::defaults::NUM_FROZEN_POINTS_DYNAMIC),
             "Set the number of random start (frozen) points to use when "
             "inserting and searching");
+        optional_configs.add_options()("save_index",
+                                        po::value<bool>(&save_index)->default_value(true),
+                                        "Whether or not to save the index for future runs");
 
         // Merge required and optional parameters
         desc.add(required_configs).add(optional_configs);
@@ -288,15 +292,15 @@ int main(int argc, char **argv)
         if (data_type == std::string("int8"))
             build_dynamic_index<int8_t>(
                 data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, index_path_prefix, concurrent, label_file, universal_label);
+                num_start_pts, index_path_prefix, concurrent, label_file, universal_label, save_index);
         else if (data_type == std::string("uint8"))
             build_dynamic_index<uint8_t>(
                 data_path, params, points_to_skip, max_points_to_insert, beginning_index_size, start_point_norm,
-                num_start_pts, index_path_prefix, concurrent, label_file, universal_label);
+                num_start_pts, index_path_prefix, concurrent, label_file, universal_label, save_index);
         else if (data_type == std::string("float"))
             build_dynamic_index<float>(data_path, params, points_to_skip, max_points_to_insert,
                 beginning_index_size, start_point_norm, num_start_pts,
-                index_path_prefix, concurrent, label_file, universal_label);
+                index_path_prefix, concurrent, label_file, universal_label, save_index);
         else
             std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
     }
