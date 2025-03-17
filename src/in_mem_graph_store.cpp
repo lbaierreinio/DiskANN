@@ -170,8 +170,12 @@ std::tuple<uint32_t, uint32_t, size_t> InMemGraphStore::load_impl(const std::str
     size_t bytes_read = vamana_metadata_size;
     size_t cc = 0;
     uint32_t nodes_read = 0;
+    
+    // Welford's algorithm for numerically stable online computation of mean and variance
+    size_t count = 0;
     double mean = 0.0;
-    double variance = 0.0;
+    double m2 = 0.0;
+
     while (bytes_read != expected_file_size)
     {
         uint32_t k;
@@ -185,9 +189,14 @@ std::tuple<uint32_t, uint32_t, size_t> InMemGraphStore::load_impl(const std::str
         cc += k;
         ++nodes_read;
         std::vector<uint32_t> tmp(k);
-        double old_mean = mean;
-        mean += (k - mean) / nodes_read;
-        variance += (k - mean) * (k - old_mean);
+        
+        // Welford's algorithm
+        count++;
+        double delta = k - mean;
+        mean += delta / count;
+        double delta2 = k - mean;
+        m2 += delta * delta2;
+
         tmp.reserve(k);
         in.read((char *)tmp.data(), k * sizeof(uint32_t));
         _graph[nodes_read - 1].swap(tmp);
@@ -199,6 +208,9 @@ std::tuple<uint32_t, uint32_t, size_t> InMemGraphStore::load_impl(const std::str
             _max_range_of_graph = k;
         }
     }
+
+    // Welford's algorithm
+    double variance = m2 / count;
 
     // write total number of out_edges to log_file
     log_file << "num_out_edges: " << cc << std::endl;
