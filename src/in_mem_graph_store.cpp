@@ -170,14 +170,11 @@ std::tuple<uint32_t, uint32_t, size_t> InMemGraphStore::load_impl(const std::str
     size_t bytes_read = vamana_metadata_size;
     size_t cc = 0;
     uint32_t nodes_read = 0;
-    double mean = 0.0;
-    double variance = 0.0;
-
+    
     // Welford's algorithm for numerically stable online computation of mean and variance
     size_t count = 0;
     double mean = 0.0;
     double m2 = 0.0;
-
 
     while (bytes_read != expected_file_size)
     {
